@@ -146,7 +146,7 @@ const MessageGroup: FC<MessageGroupProps> = ({
     data: signals,
     isLoading,
     error,
-  } = useSignals(vehicleId, message.message_name);
+  } = useSignals(isExpanded ? vehicleId : null, isExpanded ? message.message_name : null);
 
   const signalsInMessage = selectedSignals.filter(
     (s) => s.message_name === message.message_name

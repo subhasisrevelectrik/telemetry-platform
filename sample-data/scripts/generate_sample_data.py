@@ -334,8 +334,8 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="..",
-        help="Output directory (default: ..)",
+        default=None,
+        help="Output directory (default: <repo_root>/data/)",
     )
     parser.add_argument(
         "--frequency_hz",
@@ -349,7 +349,8 @@ def main():
     # Get paths
     script_dir = Path(__file__).parent
     dbc_path = script_dir.parent / "dbc" / "ev_powertrain.dbc"
-    output_dir = Path(args.output_dir)
+    # Default: repo_root/data/ — works regardless of where the script is invoked from
+    output_dir = Path(args.output_dir) if args.output_dir else script_dir.parent.parent / "data"
 
     if not dbc_path.exists():
         print(f"Error: DBC file not found: {dbc_path}", file=sys.stderr)

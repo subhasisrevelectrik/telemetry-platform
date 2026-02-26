@@ -33,7 +33,7 @@ def get_messages_local(vehicle_id: str) -> List[Message]:
     # Read all Parquet files and aggregate message counts
     message_counts = {}
     for parquet_file in vehicle_dir.rglob("*.parquet"):
-        table = pq.read_table(parquet_file, columns=["message_name"])
+        table = pq.ParquetFile(parquet_file).read(columns=["message_name"])
         for msg_name in table.column("message_name").to_pylist():
             message_counts[msg_name] = message_counts.get(msg_name, 0) + 1
 

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     cognito_region: str = "us-east-1"
 
     # Local mode configuration
-    local_data_dir: str = "./data/decoded"
+    local_data_dir: str = "../data/decoded"
 
     model_config = SettingsConfigDict(
         env_file=".env",

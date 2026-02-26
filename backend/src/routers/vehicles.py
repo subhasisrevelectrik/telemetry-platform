@@ -45,8 +45,8 @@ def list_vehicles_local() -> List[Vehicle]:
         first_file = min(parquet_files, key=lambda p: p.stat().st_mtime)
         last_file = max(parquet_files, key=lambda p: p.stat().st_mtime)
 
-        first_table = pq.read_table(first_file, columns=["timestamp"])
-        last_table = pq.read_table(last_file, columns=["timestamp"])
+        first_table = pq.ParquetFile(first_file).read(columns=["timestamp"])
+        last_table = pq.ParquetFile(last_file).read(columns=["timestamp"])
 
         first_seen = datetime.fromtimestamp(
             first_table.column("timestamp")[0].as_py().timestamp()
@@ -55,8 +55,8 @@ def list_vehicles_local() -> List[Vehicle]:
             last_table.column("timestamp")[-1].as_py().timestamp()
         )
 
-        # Count total rows
-        frame_count = sum(pq.read_table(f).num_rows for f in parquet_files)
+        # Count total rows (read metadata only — no data scan needed)
+        frame_count = sum(pq.ParquetFile(f).metadata.num_rows for f in parquet_files)
 
         vehicles_data[vehicle_id] = Vehicle(
             vehicle_id=vehicle_id,

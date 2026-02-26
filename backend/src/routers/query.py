@@ -1,10 +1,12 @@
 """Query router for time-series data."""
 
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException
 
@@ -14,6 +16,25 @@ from ..downsampler import lttb_downsample
 from ..models import DataPoint, QueryRequest, QueryResponse, QueryStats, SignalData
 
 router = APIRouter()
+
+
+def _extract_partition_date(path: Path) -> Optional[date]:
+    """Extract date from Hive partition path like .../year=2024/month=1/day=15/..."""
+    parts: Dict[str, int] = {}
+    for part in path.parts:
+        if "=" in part:
+            k, _, v = part.partition("=")
+            if k in ("year", "month", "day"):
+                try:
+                    parts[k] = int(v)
+                except ValueError:
+                    pass
+    if len(parts) == 3:
+        try:
+            return date(parts["year"], parts["month"], parts["day"])
+        except ValueError:
+            pass
+    return None
 
 
 @router.post("/{vehicle_id}/query", response_model=QueryResponse)
@@ -27,7 +48,7 @@ async def query_signals(vehicle_id: str, request: QueryRequest):
 
 def query_signals_local(vehicle_id: str, request: QueryRequest) -> QueryResponse:
     """Query signals from local Parquet files."""
-    start_time = time.time()
+    start_time_wall = time.time()
 
     data_dir = Path(settings.local_data_dir)
     vehicle_dir = data_dir / f"vehicle_id={vehicle_id}"
@@ -35,71 +56,87 @@ def query_signals_local(vehicle_id: str, request: QueryRequest) -> QueryResponse
     if not vehicle_dir.exists():
         raise HTTPException(status_code=404, detail="Vehicle not found")
 
-    # Read all Parquet files
+    start_ts_ns = int(request.start_time.timestamp() * 1e9)
+    end_ts_ns = int(request.end_time.timestamp() * 1e9)
+    query_start_date = request.start_time.date()
+    query_end_date = request.end_time.date()
+
+    # O(1) lookup for requested (message, signal) pairs
+    requested = {(s.message_name, s.signal_name) for s in request.signals}
+    requested_msg_names = pa.array(
+        list({s.message_name for s in request.signals}), type=pa.string()
+    )
+
     all_data: Dict[str, List[Tuple[float, float]]] = {}
     rows_scanned = 0
     bytes_scanned = 0
 
     for parquet_file in vehicle_dir.rglob("*.parquet"):
-        table = pq.read_table(parquet_file)
+        # Partition pruning: skip files whose day is outside the query range
+        file_date = _extract_partition_date(parquet_file)
+        if file_date is not None and not (query_start_date <= file_date <= query_end_date):
+            continue
+
+        table = pq.ParquetFile(parquet_file).read(
+            columns=["timestamp", "message_name", "signal_name", "value"]
+        )
         bytes_scanned += parquet_file.stat().st_size
 
-        # Extract columns
-        timestamps = table.column("timestamp").to_pylist()
-        message_names = table.column("message_name").to_pylist()
-        signal_names = table.column("signal_name").to_pylist()
-        values = table.column("value").to_pylist()
-        units = table.column("unit").to_pylist()
+        if len(table) == 0:
+            continue
 
-        # Filter by requested signals and time range
-        start_ts = int(request.start_time.timestamp() * 1e9)
-        end_ts = int(request.end_time.timestamp() * 1e9)
+        # Vectorized filter: keep only rows for requested message names
+        msg_mask = pc.is_in(table.column("message_name"), value_set=requested_msg_names)
+        table = table.filter(msg_mask)
+        if len(table) == 0:
+            continue
 
-        for ts, msg_name, sig_name, value, unit in zip(
-            timestamps, message_names, signal_names, values, units
+        # Vectorized filter: keep only rows within the time range
+        ts_col = table.column("timestamp")
+        ts_int = pc.cast(ts_col, pa.int64()) if pa.types.is_timestamp(ts_col.type) else ts_col
+        time_mask = pc.and_(
+            pc.greater_equal(ts_int, pa.scalar(start_ts_ns, type=pa.int64())),
+            pc.less_equal(ts_int, pa.scalar(end_ts_ns, type=pa.int64())),
+        )
+        table = table.filter(time_mask)
+        if len(table) == 0:
+            continue
+
+        timestamps_raw = table.column("timestamp").to_pylist()
+        message_names_list = table.column("message_name").to_pylist()
+        signal_names_list = table.column("signal_name").to_pylist()
+        values_list = table.column("value").to_pylist()
+
+        for ts, msg_name, sig_name, value in zip(
+            timestamps_raw, message_names_list, signal_names_list, values_list
         ):
-            # Check time range
-            ts_ns = ts.value if hasattr(ts, 'value') else int(ts.timestamp() * 1e9)
-            if ts_ns < start_ts or ts_ns > end_ts:
+            if (msg_name, sig_name) not in requested:
                 continue
 
-            # Check if this signal is requested
-            for req_sig in request.signals:
-                if req_sig.message_name == msg_name and req_sig.signal_name == sig_name:
-                    key = f"{msg_name}.{sig_name}"
-                    if key not in all_data:
-                        all_data[key] = []
-
-                    # Convert to milliseconds for frontend
-                    ts_ms = ts_ns / 1e6
-                    all_data[key].append((ts_ms, float(value)))
-                    rows_scanned += 1
+            ts_ns = ts.value if hasattr(ts, "value") else int(ts.timestamp() * 1e9)
+            key = f"{msg_name}.{sig_name}"
+            if key not in all_data:
+                all_data[key] = []
+            all_data[key].append((ts_ns / 1e6, float(value)))
+            rows_scanned += 1
 
     # Apply downsampling and format response
     signal_responses = []
-
     for req_sig in request.signals:
         key = f"{req_sig.message_name}.{req_sig.signal_name}"
-
         if key not in all_data:
             continue
-
         points = sorted(all_data[key], key=lambda p: p[0])
-
-        # Apply LTTB downsampling if needed
         if len(points) > request.max_points:
             points = lttb_downsample(points, request.max_points)
-
         data_points = [DataPoint(t=int(t), v=v) for t, v in points]
-
         signal_responses.append(SignalData(
             name=req_sig.signal_name,
-            unit="",  # Would need to track this
+            unit="",
             data=data_points,
         ))
 
-    duration_ms = int((time.time() - start_time) * 1000)
-
+    duration_ms = int((time.time() - start_time_wall) * 1000)
     return QueryResponse(
         signals=signal_responses,
         query_stats=QueryStats(

@@ -33,7 +33,9 @@ def get_signals_local(vehicle_id: str, message_name: str) -> List[Signal]:
     signal_stats = {}
 
     for parquet_file in vehicle_dir.rglob("*.parquet"):
-        table = pq.read_table(parquet_file)
+        table = pq.ParquetFile(parquet_file).read(
+            columns=["message_name", "signal_name", "value", "unit"]
+        )
 
         # Filter by message_name
         mask = [msg == message_name for msg in table.column("message_name").to_pylist()]
@@ -50,19 +52,28 @@ def get_signals_local(vehicle_id: str, message_name: str) -> List[Signal]:
             if sig_name not in signal_stats:
                 signal_stats[sig_name] = {
                     "unit": unit,
-                    "values": []
+                    "min": value,
+                    "max": value,
+                    "sum": value,
+                    "count": 1,
                 }
-            signal_stats[sig_name]["values"].append(value)
+            else:
+                s = signal_stats[sig_name]
+                if value < s["min"]:
+                    s["min"] = value
+                if value > s["max"]:
+                    s["max"] = value
+                s["sum"] += value
+                s["count"] += 1
 
     signals = []
     for sig_name, stats in signal_stats.items():
-        values = stats["values"]
         signals.append(Signal(
             signal_name=sig_name,
             unit=stats["unit"],
-            min_value=min(values),
-            max_value=max(values),
-            avg_value=sum(values) / len(values),
+            min_value=stats["min"],
+            max_value=stats["max"],
+            avg_value=stats["sum"] / stats["count"],
         ))
 
     return sorted(signals, key=lambda s: s.signal_name)
