@@ -1,0 +1,15 @@
+﻿@echo off
+REM ============================================================
+REM AWS Environment Setup for Windows
+REM RECOMMENDED: Use `aws login` instead - no static keys needed!
+REM ============================================================
+REM SETUP:
+REM   1. Copy: copy set_aws_env.bat.example set_aws_env.bat
+REM   2. Fill in your values
+REM   3. Run: set_aws_env.bat
+
+set AWS_ACCESS_KEY_ID=your-access-key-here
+set AWS_SECRET_ACCESS_KEY=your-secret-key-here
+set AWS_DEFAULT_REGION=us-east-1
+
+echo AWS environment variables set.

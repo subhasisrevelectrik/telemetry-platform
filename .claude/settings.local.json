@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"c:/Documents/Telematics/can-telemetry-platform/frontend/deploy.bat\":*)",
+      "Bash(\"c:/Documents/Telematics/can-telemetry-platform/frontend/.env.production\":*)"
+    ]
+  }
+}

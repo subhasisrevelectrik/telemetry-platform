@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LOCAL_MODE=true
+      - AWS_REGION=us-east-1
+    volumes:
+      - ./data:/app/data
+      - ./backend/src:/app/src
+    command: uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  edge-agent:
+    build:
+      context: ./edge-agent
+      dockerfile: Dockerfile
+    environment:
+      - SIMULATE=true
+    volumes:
+      - ./data:/app/data
+      - ./edge-agent/config.yaml:/app/config.yaml
+      - ./sample-data/dbc:/app/dbc
+    command: python -m src.main --config config.yaml --simulate
+    depends_on:
+      - backend
+
+volumes:
+  data:
+
+networks:
+  default:
+    name: telemetry-network

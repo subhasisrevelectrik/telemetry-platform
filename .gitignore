@@ -1,0 +1,47 @@
+﻿# === AWS Credentials - NEVER COMMIT ===
+infra/set_aws_env.bat
+infra/set_aws_env.sh
+.env
+.env.*
+!.env.example
+.aws/
+
+# === Secrets ===
+*.pem
+*.key
+*.secret
+secrets/
+credentials
+
+# === Local development data ===
+data/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# === Node ===
+node_modules/
+
+# === CDK ===
+cdk.out/
+cdk.context.json
+
+# === Lambda ===
+lambda-layer/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+*.swp
+
+# === IDE ===
+.vscode/settings.json
+.idea/
+*.iml

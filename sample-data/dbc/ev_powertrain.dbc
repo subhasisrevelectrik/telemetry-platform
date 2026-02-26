@@ -1,0 +1,83 @@
+VERSION ""
+
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_SGTYPE_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: BMS MotorController CoolingSystem
+
+BO_ 416 BMS_CellVoltages: 8 BMS
+ SG_ Cell_1_Voltage : 0|16@1+ (0.001,0) [2.5|4.2] "V"  Vector__XXX
+ SG_ Cell_2_Voltage : 16|16@1+ (0.001,0) [2.5|4.2] "V"  Vector__XXX
+ SG_ Cell_3_Voltage : 32|16@1+ (0.001,0) [2.5|4.2] "V"  Vector__XXX
+ SG_ Cell_Delta_mV : 48|16@1+ (0.1,0) [0|200] "mV"  Vector__XXX
+
+BO_ 417 BMS_PackStatus: 8 BMS
+ SG_ Pack_Voltage : 0|16@1+ (0.1,0) [300|800] "V"  Vector__XXX
+ SG_ Pack_Current : 16|16@1+ (0.1,-400) [-400|400] "A"  Vector__XXX
+ SG_ Pack_SOC : 32|8@1+ (0.5,0) [0|100] "%"  Vector__XXX
+
+BO_ 688 MotorCtrl_Status: 8 MotorController
+ SG_ Motor_RPM : 0|16@1+ (1,0) [0|12000] "rpm"  Vector__XXX
+ SG_ Motor_Torque : 16|16@1+ (0.1,0) [0|350] "Nm"  Vector__XXX
+ SG_ Motor_Power : 32|16@1+ (0.1,0) [0|250] "kW"  Vector__XXX
+
+BO_ 689 MotorCtrl_Thermal: 8 MotorController
+ SG_ Stator_Temp : 0|8@1+ (1,-40) [-40|180] "degC"  Vector__XXX
+ SG_ Rotor_Temp : 8|8@1+ (1,-40) [-40|160] "degC"  Vector__XXX
+ SG_ Bearing_Temp : 16|8@1+ (1,-40) [-40|120] "degC"  Vector__XXX
+
+BO_ 1024 CoolantLoop: 6 CoolingSystem
+ SG_ Coolant_Inlet : 0|8@1+ (0.5,-40) [-40|80] "degC"  Vector__XXX
+ SG_ Coolant_Outlet : 8|8@1+ (0.5,-40) [-40|95] "degC"  Vector__XXX
+ SG_ Flow_Rate : 16|16@1+ (0.01,0) [0|25] "L/min"  Vector__XXX
+ SG_ Pump_Duty : 32|8@1+ (0.5,0) [0|100] "%"  Vector__XXX
+
+
+
+CM_ SG_ 416 Cell_1_Voltage "Battery cell 1 voltage";
+CM_ SG_ 416 Cell_2_Voltage "Battery cell 2 voltage";
+CM_ SG_ 416 Cell_3_Voltage "Battery cell 3 voltage";
+CM_ SG_ 416 Cell_Delta_mV "Maximum voltage delta between cells";
+CM_ SG_ 417 Pack_Voltage "Total battery pack voltage";
+CM_ SG_ 417 Pack_Current "Battery pack current (positive = discharge)";
+CM_ SG_ 417 Pack_SOC "State of charge";
+CM_ SG_ 688 Motor_RPM "Motor rotational speed";
+CM_ SG_ 688 Motor_Torque "Motor output torque";
+CM_ SG_ 688 Motor_Power "Motor power output";
+CM_ SG_ 689 Stator_Temp "Motor stator temperature";
+CM_ SG_ 689 Rotor_Temp "Motor rotor temperature";
+CM_ SG_ 689 Bearing_Temp "Motor bearing temperature";
+CM_ SG_ 1024 Coolant_Inlet "Coolant temperature at inlet";
+CM_ SG_ 1024 Coolant_Outlet "Coolant temperature at outlet";
+CM_ SG_ 1024 Flow_Rate "Coolant flow rate";
+CM_ SG_ 1024 Pump_Duty "Coolant pump duty cycle";
+
+BA_DEF_ "BusType" STRING ;
+BA_DEF_DEF_ "BusType" "CAN";

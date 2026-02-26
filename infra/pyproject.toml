@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "can-telemetry-infrastructure"
+version = "1.0.0"
+description = "AWS CDK infrastructure for CAN telemetry platform"
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib>=2.120.0",
+    "constructs>=10.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0.0",
+    "mypy>=1.8.0",
+]
