@@ -242,6 +242,80 @@ class TelemetryStack(Stack):
         )
 
         # =======================
+        # LAMBDA - PARTITION SYNC
+        # =======================
+
+        # Role for partition sync Lambda
+        partition_sync_role = iam.Role(
+            self,
+            "PartitionSyncRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
+            ],
+        )
+
+        # Athena: start and monitor queries on the telemetry workgroup
+        partition_sync_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "athena:StartQueryExecution",
+                    "athena:GetQueryExecution",
+                ],
+                resources=[
+                    f"arn:aws:athena:{self.region}:{self.account}:workgroup/{self.athena_workgroup.name}",
+                ],
+            )
+        )
+
+        # Glue: read table metadata and create partitions
+        partition_sync_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "glue:GetDatabase",
+                    "glue:GetTable",
+                    "glue:CreatePartition",
+                    "glue:BatchCreatePartition",
+                ],
+                resources=[
+                    f"arn:aws:glue:{self.region}:{self.account}:catalog",
+                    f"arn:aws:glue:{self.region}:{self.account}:database/{self.glue_database.ref}",
+                    f"arn:aws:glue:{self.region}:{self.account}:table/{self.glue_database.ref}/decoded",
+                ],
+            )
+        )
+
+        # S3: Athena needs to verify the partition location exists
+        self.data_bucket.grant_read(partition_sync_role)
+        # Athena writes query results to the results bucket
+        self.athena_results_bucket.grant_read_write(partition_sync_role)
+
+        # Partition sync Lambda (boto3 is built into the Lambda runtime — no layer needed)
+        self.partition_sync_lambda = lambda_.Function(
+            self,
+            "PartitionSyncFunction",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset("../processing/partition_sync"),
+            role=partition_sync_role,
+            timeout=Duration.seconds(60),
+            memory_size=256,
+            environment={
+                "ATHENA_DATABASE": self.glue_database.ref,
+                "ATHENA_WORKGROUP": self.athena_workgroup.name,
+            },
+        )
+
+        # S3 trigger: fires whenever a new decoded Parquet file lands in the data lake
+        self.data_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(self.partition_sync_lambda),
+            s3.NotificationKeyFilter(prefix="decoded/", suffix=".parquet"),
+        )
+
+        # =======================
         # LAMBDA - API BACKEND
         # =======================
 
