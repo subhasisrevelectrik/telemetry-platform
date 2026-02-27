@@ -152,9 +152,7 @@ def query_signals_local(vehicle_id: str, request: QueryRequest) -> QueryResponse
         if key not in all_data:
             continue
         points = sorted(all_data[key], key=lambda p: p[0])
-        if request.stride is not None:
-            points = points[::request.stride]
-        elif len(points) > request.max_points:
+        if len(points) > request.max_points:
             points = lttb_downsample(points, request.max_points)
         data_points = [DataPoint(t=int(t), v=v) for t, v in points]
         signal_responses.append(SignalData(
@@ -196,9 +194,10 @@ def query_signals_athena(vehicle_id: str, request: QueryRequest) -> QueryRespons
     # Partition pruning clause — lets Athena skip entire S3 prefixes
     partition_clause = _partition_date_clause(request.start_time, request.end_time)
 
-    # Fetch enough rows for LTTB to work well (20× the target output points),
-    # capped at 50k to keep result pagination fast (≪ API Gateway's 29s limit).
-    fetch_limit = min(request.max_points * 20, 50000)
+    # Fetch enough rows for LTTB to work well (at least 5× target output points).
+    # Hard cap at 100k: at ~4k rows/s pagination rate this takes ~25s — safely
+    # under the API Gateway 29-second integration timeout.
+    fetch_limit = min(max(request.max_points * 5, 50000), 100000)
 
     # No ORDER BY — Python sorts after fetching, which is faster than Athena sort
     sql = f"""
@@ -245,9 +244,7 @@ def query_signals_athena(vehicle_id: str, request: QueryRequest) -> QueryRespons
 
             points = sorted(signal_data[key], key=lambda p: p[0])
 
-            if request.stride is not None:
-                points = points[::request.stride]
-            elif len(points) > request.max_points:
+            if len(points) > request.max_points:
                 points = lttb_downsample(points, request.max_points)
 
             data_points = [DataPoint(t=int(t), v=v) for t, v in points]

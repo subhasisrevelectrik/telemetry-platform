@@ -54,9 +54,7 @@ class QueryRequest(BaseModel):
     signals: List[SignalRequest] = Field(..., min_length=1)
     start_time: datetime
     end_time: datetime
-    max_points: int = Field(default=2000, ge=10, le=100000)
-    # When set, take every Nth point instead of LTTB downsampling
-    stride: Optional[int] = Field(default=None, ge=2, le=10000)
+    max_points: int = Field(default=10000, ge=10, le=100000)
 
 
 class DataPoint(BaseModel):
