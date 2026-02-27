@@ -1,0 +1,79 @@
+# ============================================================
+# docker-compose.rpi.yml — Pi-local Docker stack
+#
+# Service 1: edge-agent   — reads real CAN data via host SocketCAN
+# Service 2: backend      — FastAPI in LOCAL_MODE, reads the
+#                           same Parquet files via shared volume
+#
+# IMPORTANT: network_mode: host is REQUIRED for the edge-agent
+# to access the SocketCAN interface (can0) on the host kernel.
+#
+# Usage:
+#   docker compose -f docker-compose.rpi.yml up
+# ============================================================
+
+services:
+
+  edge-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telemetry-edge-agent:rpi
+    container_name: telemetry-edge-agent
+    restart: unless-stopped
+
+    # Must be host network to access SocketCAN (can0) on the host
+    network_mode: host
+
+    volumes:
+      - telemetry-data:/data
+      - ./config-rpi.yaml:/app/config-rpi.yaml:ro
+      - ../sample-data/dbc:/app/dbc:ro
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      # AWS credentials for S3 upload (optional — use IAM role instead)
+      # - AWS_ACCESS_KEY_ID=
+      # - AWS_SECRET_ACCESS_KEY=
+      # - AWS_DEFAULT_REGION=us-east-1
+
+    command: ["python", "-m", "src.main", "--config", "config-rpi.yaml"]
+
+    # Override output_dir to write inside the shared volume
+    # (set in config-rpi.yaml: batching.output_dir: /data/raw)
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: telemetry-backend:rpi
+    container_name: telemetry-backend
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      - telemetry-data:/data:ro
+
+    environment:
+      - LOCAL_MODE=true
+      - LOCAL_DATA_DIR=/data/raw
+      - PYTHONUNBUFFERED=1
+
+    depends_on:
+      - edge-agent
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  telemetry-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /home/pi/telemetry-platform/data

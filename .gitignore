@@ -16,6 +16,20 @@ credentials
 # === Local development data ===
 data/
 
+# === CAN data (potentially large and sensitive) ===
+edge-agent/data/
+edge-agent/logs/
+data/raw/
+data/pending/
+data/archive/
+data/decoded/
+logs/
+sample-data/raw/
+sample-data/decoded/
+
+# === Pi-specific config (contains vehicle IDs — do not commit) ===
+edge-agent/config-rpi.yaml
+
 # === Python ===
 __pycache__/
 *.pyc

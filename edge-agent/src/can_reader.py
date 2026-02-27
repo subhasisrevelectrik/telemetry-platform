@@ -2,8 +2,9 @@
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Generator, Protocol
+from typing import Generator, Optional, Protocol
 
 import can
 import cantools
@@ -15,10 +16,13 @@ logger = logging.getLogger(__name__)
 class CANFrame:
     """Represents a single CAN frame with timestamp."""
 
-    timestamp: float  # Unix timestamp in seconds (with microsecond precision)
+    timestamp: float  # Unix timestamp in seconds (UTC, with microsecond precision)
     arb_id: int  # CAN arbitration ID
-    dlc: int  # Data length code (0-8)
+    dlc: int  # Data length code (0-8 for classic CAN, 0-64 for CAN-FD)
     data: bytes  # Raw CAN data bytes
+    is_error: bool = False  # True if this is a CAN error frame
+    is_fd: bool = False  # True if this is a CAN-FD frame
+    channel: str = "can0"  # Source CAN interface name
 
 
 class CANReader(Protocol):
@@ -34,89 +38,228 @@ class CANReader(Protocol):
 
 
 class RealCANReader:
-    """Reads CAN frames from a real hardware interface."""
+    """
+    Reads CAN frames from real hardware (SocketCAN) with automatic reconnection,
+    hardware-level filters, and per-session statistics.
+    """
 
-    def __init__(self, interface: str, channel: str, bitrate: int):
+    def __init__(self, config: dict) -> None:
         """
-        Initialize real CAN reader.
+        Initialize from the full configuration dict.
 
         Args:
-            interface: Interface type (socketcan, pcan, etc.)
-            channel: Channel name (can0, PCAN_USBBUS1, etc.)
-            bitrate: CAN bus bitrate in bps
+            config: Full config dict; reads the ``can`` section:
+                interface (str): python-can backend, e.g. "socketcan"
+                channel  (str): Linux interface name, e.g. "can0"
+                bitrate  (int): Bus bitrate in bps, e.g. 500000
+                fd       (bool, optional): Enable CAN-FD mode (default False)
+                receive_own_messages (bool, optional): Echo own TX (default False)
+                filters  (list, optional): python-can filter dicts:
+                    [{"can_id": 0x1A0, "can_mask": 0x7FF, "extended": False}]
         """
-        self.interface = interface
-        self.channel = channel
-        self.bitrate = bitrate
-        self.bus: can.Bus | None = None
+        can_cfg = config["can"]
+        self.interface: str = can_cfg["interface"]
+        self.channel: str = can_cfg["channel"]
+        self.bitrate: int = can_cfg["bitrate"]
+        self.fd: bool = bool(can_cfg.get("fd", False))
+        self.filters: Optional[list] = can_cfg.get("filters")
+        self.receive_own: bool = bool(can_cfg.get("receive_own_messages", False))
+
+        self.bus: Optional[can.Bus] = None
+        self._running: bool = False
+        self._reconnect_delay: float = 1.0
+        self._max_reconnect_delay: float = 30.0
+
+        # Cumulative counters
+        self._stats: dict[str, int] = {"frames": 0, "errors": 0, "bus_off": 0}
+
+        # Rolling deque for frames-per-second calculation (last 10 s)
+        self._frame_times: deque = deque()
+        self._fps_window: float = 10.0
 
         logger.info(
-            f"Initializing CAN reader: interface={interface}, "
-            f"channel={channel}, bitrate={bitrate}"
+            "Initializing RealCANReader: interface=%s channel=%s bitrate=%d fd=%s",
+            self.interface,
+            self.channel,
+            self.bitrate,
+            self.fd,
         )
 
-    def __enter__(self) -> "RealCANReader":
-        """Context manager entry."""
-        try:
-            self.bus = can.Bus(
-                interface=self.interface,
-                channel=self.channel,
-                bitrate=self.bitrate,
-            )
-            logger.info(f"CAN bus opened successfully on {self.channel}")
-        except Exception as e:
-            logger.error(f"Failed to open CAN bus: {e}")
-            raise
-        return self
+    # ------------------------------------------------------------------
+    # Connection management
+    # ------------------------------------------------------------------
 
-    def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: type) -> None:
-        """Context manager exit."""
-        self.close()
+    def connect(self) -> bool:
+        """
+        Open the CAN interface.
+
+        Returns:
+            True if the bus was opened successfully, False otherwise.
+        """
+        try:
+            kwargs: dict = {
+                "interface": self.interface,
+                "channel": self.channel,
+                "bitrate": self.bitrate,
+                "receive_own_messages": self.receive_own,
+                "fd": self.fd,
+            }
+            if self.filters:
+                kwargs["can_filters"] = self.filters
+
+            self.bus = can.Bus(**kwargs)
+            self._reconnect_delay = 1.0  # reset backoff on success
+            logger.info("Connected to %s at %d bps", self.channel, self.bitrate)
+            return True
+        except can.CanError as exc:
+            logger.error("Failed to connect to %s: %s", self.channel, exc)
+            return False
+
+    def reconnect(self) -> bool:
+        """
+        Shut down the current bus (if any) and try to reconnect with exponential
+        backoff (1 s -> 2 s -> 4 s ... up to 30 s).
+
+        Returns:
+            True if reconnection succeeded, False otherwise.
+        """
+        if self.bus is not None:
+            try:
+                self.bus.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self.bus = None
+
+        logger.warning(
+            "Reconnecting to %s in %.1f s...", self.channel, self._reconnect_delay
+        )
+        time.sleep(self._reconnect_delay)
+        self._reconnect_delay = min(
+            self._reconnect_delay * 2, self._max_reconnect_delay
+        )
+        return self.connect()
+
+    # ------------------------------------------------------------------
+    # Frame reading
+    # ------------------------------------------------------------------
 
     def read_frames(self) -> Generator[CANFrame, None, None]:
         """
-        Read CAN frames from the bus.
+        Yield CAN frames from the bus indefinitely.
 
-        Yields:
-            CANFrame objects as they arrive
+        Automatically reconnects on bus-off or OS errors.
+        Call ``stop()`` (or close the context manager) to end the loop.
+        Error frames are counted in stats but NOT yielded.
         """
-        if self.bus is None:
-            raise RuntimeError("CAN bus not initialized. Use context manager.")
+        self._running = True
 
-        logger.info("Starting CAN frame capture...")
-        frame_count = 0
+        if not self.connect():
+            while self._running and not self.reconnect():
+                pass
 
-        try:
-            while True:
-                msg = self.bus.recv(timeout=1.0)
-                if msg is not None:
-                    frame = CANFrame(
-                        timestamp=msg.timestamp,
-                        arb_id=msg.arbitration_id,
-                        dlc=msg.dlc,
-                        data=bytes(msg.data),
-                    )
-                    frame_count += 1
-                    if frame_count % 1000 == 0:
-                        logger.debug(f"Captured {frame_count} frames")
-                    yield frame
-        except KeyboardInterrupt:
-            logger.info(f"CAN capture stopped. Total frames: {frame_count}")
-        except Exception as e:
-            logger.error(f"Error reading CAN frame: {e}")
-            raise
+        while self._running:
+            try:
+                msg = self.bus.recv(timeout=1.0)  # type: ignore[union-attr]
+                if msg is None:
+                    # recv() timed out — check _running flag and loop back
+                    continue
+
+                if msg.is_error_frame:
+                    self._stats["errors"] += 1
+                    logger.debug("Error frame on %s: %s", self.channel, msg)
+                    continue
+
+                # Prefer hardware timestamp from SocketCAN, fall back to wall clock
+                t: float = float(msg.timestamp) if msg.timestamp else time.time()
+
+                self._stats["frames"] += 1
+                self._frame_times.append(t)
+
+                # Prune stale entries from the rolling window
+                cutoff = t - self._fps_window
+                while self._frame_times and self._frame_times[0] < cutoff:
+                    self._frame_times.popleft()
+
+                yield CANFrame(
+                    timestamp=t,
+                    arb_id=msg.arbitration_id,
+                    dlc=msg.dlc,
+                    data=bytes(msg.data),
+                    is_error=False,
+                    is_fd=bool(getattr(msg, "is_fd", False)),
+                    channel=self.channel,
+                )
+
+            except can.CanOperationError as exc:
+                logger.error("CAN bus-off / operation error on %s: %s", self.channel, exc)
+                self._stats["bus_off"] += 1
+                while self._running and not self.reconnect():
+                    pass
+
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Unexpected error reading CAN: %s", exc)
+                time.sleep(0.1)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def stop(self) -> None:
+        """Signal the read loop to exit on next iteration."""
+        self._running = False
 
     def close(self) -> None:
-        """Close the CAN bus connection."""
+        """Stop reading and shut down the CAN bus."""
+        self.stop()
         if self.bus is not None:
-            self.bus.shutdown()
-            logger.info("CAN bus closed")
+            try:
+                self.bus.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self.bus = None
+            logger.info("CAN bus %s closed", self.channel)
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    def get_stats(self) -> dict:
+        """
+        Return a snapshot of current statistics.
+
+        Returns:
+            Dict with keys: frames, errors, bus_off, frames_per_sec
+        """
+        now = time.time()
+        recent = sum(1 for t in self._frame_times if now - t <= self._fps_window)
+        fps = round(recent / self._fps_window, 1)
+        return {**self._stats, "frames_per_sec": fps}
+
+    # ------------------------------------------------------------------
+    # Context manager support
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "RealCANReader":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: object,
+    ) -> None:
+        self.close()
 
 
 class SimulatedCANReader:
     """Simulates CAN frames using a DBC file to generate realistic data."""
 
-    def __init__(self, dbc_path: str, frequency: int = 100, duration_sec: float | None = None):
+    def __init__(
+        self,
+        dbc_path: str,
+        frequency: int = 100,
+        duration_sec: Optional[float] = None,
+    ) -> None:
         """
         Initialize simulated CAN reader.
 
@@ -128,11 +271,12 @@ class SimulatedCANReader:
         self.dbc_path = dbc_path
         self.frequency = frequency
         self.duration_sec = duration_sec
-        self.db: cantools.database.Database | None = None
+        self.db: Optional[cantools.database.Database] = None
 
         logger.info(
-            f"Initializing simulated CAN reader: "
-            f"dbc={dbc_path}, frequency={frequency}Hz"
+            "Initializing simulated CAN reader: dbc=%s frequency=%dHz",
+            dbc_path,
+            frequency,
         )
 
     def __enter__(self) -> "SimulatedCANReader":
@@ -140,15 +284,21 @@ class SimulatedCANReader:
         try:
             self.db = cantools.database.load_file(self.dbc_path)
             logger.info(
-                f"Loaded DBC file: {len(self.db.messages)} messages, "
-                f"{sum(len(msg.signals) for msg in self.db.messages)} signals"
+                "Loaded DBC file: %d messages, %d signals",
+                len(self.db.messages),
+                sum(len(msg.signals) for msg in self.db.messages),
             )
-        except Exception as e:
-            logger.error(f"Failed to load DBC file: {e}")
+        except Exception as exc:
+            logger.error("Failed to load DBC file: %s", exc)
             raise
         return self
 
-    def __exit__(self, exc_type: type, exc_val: Exception, exc_tb: type) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[BaseException],
+        exc_tb: object,
+    ) -> None:
         """Context manager exit."""
         self.close()
 
@@ -168,7 +318,6 @@ class SimulatedCANReader:
         import math
         import random
 
-        # Use signal name to determine pattern
         signal_name = signal.name.lower()
 
         # Temperature signals: slow rise with noise
@@ -180,33 +329,39 @@ class SimulatedCANReader:
 
         # RPM: sinusoidal with ramps
         elif "rpm" in signal_name:
-            if t < 60:  # Ramp up
+            if t < 60:
                 base = signal.minimum + (signal.maximum - signal.minimum) * (t / 60)
-            elif t < 300:  # Hold high
+            elif t < 300:
                 base = signal.maximum * 0.8
-            elif t < 360:  # Ramp down
+            elif t < 360:
                 base = signal.maximum * 0.8 * (1 - (t - 300) / 60)
-            else:  # Idle
+            else:
                 base = signal.minimum
             noise = random.gauss(0, signal.maximum * 0.02)
             return min(signal.maximum, max(signal.minimum, base + noise))
 
         # SOC: linear decrease
         elif "soc" in signal_name:
-            rate = (signal.maximum - signal.minimum) / 3600  # 1 hour to empty
+            rate = (signal.maximum - signal.minimum) / 3600
             value = signal.maximum - rate * t
             return max(signal.minimum, value)
 
         # Voltage: stable with small noise
         elif "voltage" in signal_name or "volt" in signal_name:
-            base = (signal.minimum + signal.maximum) / 2 + (signal.maximum - signal.minimum) * 0.2
+            base = (
+                (signal.minimum + signal.maximum) / 2
+                + (signal.maximum - signal.minimum) * 0.2
+            )
             noise = random.gauss(0, (signal.maximum - signal.minimum) * 0.01)
             return min(signal.maximum, max(signal.minimum, base + noise))
 
         # Current: correlated with RPM pattern
         elif "current" in signal_name:
             if t < 60:
-                base = signal.minimum + (signal.maximum - signal.minimum) * 0.3 * (t / 60)
+                base = (
+                    signal.minimum
+                    + (signal.maximum - signal.minimum) * 0.3 * (t / 60)
+                )
             elif t < 300:
                 base = (signal.maximum - signal.minimum) * 0.4
             else:
@@ -218,7 +373,7 @@ class SimulatedCANReader:
         else:
             mid = (signal.minimum + signal.maximum) / 2
             amplitude = (signal.maximum - signal.minimum) * 0.3
-            period = 30  # 30 second period
+            period = 30.0
             value = mid + amplitude * math.sin(2 * math.pi * t / period)
             noise = random.gauss(0, amplitude * 0.05)
             return min(signal.maximum, max(signal.minimum, value + noise))
@@ -243,52 +398,46 @@ class SimulatedCANReader:
                 current_time = time.time()
                 elapsed = current_time - start_time
 
-                # Check duration limit
                 if self.duration_sec is not None and elapsed >= self.duration_sec:
                     logger.info(
-                        f"Simulation duration reached: {elapsed:.1f}s, "
-                        f"{frame_count} frames"
+                        "Simulation duration reached: %.1f s, %d frames",
+                        elapsed,
+                        frame_count,
                     )
                     break
 
-                # Generate frames for each message in the DBC
                 for message in self.db.messages:
-                    # Build signal dictionary with generated values
                     signal_data = {}
                     for signal in message.signals:
                         signal_data[signal.name] = self._generate_signal_value(
                             signal, elapsed
                         )
 
-                    # Encode message using cantools
                     try:
                         data = message.encode(signal_data)
-                        frame = CANFrame(
+                        frame_count += 1
+                        yield CANFrame(
                             timestamp=current_time,
                             arb_id=message.frame_id,
                             dlc=message.length,
                             data=bytes(data),
                         )
-                        frame_count += 1
-                        yield frame
-                    except Exception as e:
+                    except Exception as exc:  # noqa: BLE001
                         logger.warning(
-                            f"Failed to encode message {message.name}: {e}"
+                            "Failed to encode message %s: %s", message.name, exc
                         )
 
-                # Log progress
                 if frame_count % 1000 == 0:
                     logger.debug(
-                        f"Simulated {frame_count} frames, elapsed={elapsed:.1f}s"
+                        "Simulated %d frames, elapsed=%.1f s", frame_count, elapsed
                     )
 
-                # Sleep to maintain frequency
                 time.sleep(sleep_interval)
 
         except KeyboardInterrupt:
-            logger.info(f"Simulation stopped. Total frames: {frame_count}")
-        except Exception as e:
-            logger.error(f"Error in simulation: {e}")
+            logger.info("Simulation stopped. Total frames: %d", frame_count)
+        except Exception as exc:
+            logger.error("Error in simulation: %s", exc)
             raise
 
     def close(self) -> None:

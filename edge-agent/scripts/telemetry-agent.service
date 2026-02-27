@@ -1,0 +1,36 @@
+[Unit]
+Description=CAN Bus Telemetry Edge Agent
+After=network-online.target can0-setup.service
+Wants=network-online.target
+Requires=can0-setup.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/telemetry-platform/edge-agent
+Environment=PATH=/home/pi/telemetry-platform/edge-agent/venv/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/telemetry-platform/edge-agent/venv/bin/python -m src.main --config config-rpi.yaml
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logging — view with: journalctl -u telemetry-agent -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telemetry-agent
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/pi/telemetry-platform/data
+ReadWritePaths=/home/pi/telemetry-platform/logs
+
+[Install]
+WantedBy=multi-user.target

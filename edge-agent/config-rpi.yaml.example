@@ -1,0 +1,78 @@
+# ============================================================
+# Raspberry Pi CAN HAT Configuration — config-rpi.yaml
+# For real vehicle CAN bus data capture.
+#
+# IMPORTANT: Do NOT commit this file to git — it contains
+# vehicle-specific identifiers.  Copy from config-rpi.yaml.example
+# and fill in your values.
+# ============================================================
+
+# Vehicle identifier — use VIN or a custom label
+vehicle_id: "VIN_VEHICLE_01"
+
+# ---- CAN interface ---------------------------------------------------- #
+can:
+  interface: "socketcan"          # python-can backend for Linux SocketCAN
+  channel: "can0"                 # Linux interface name (ip link show can0)
+  bitrate: 500000                 # Must match can0-setup.service bitrate
+  fd: false                       # Set to true for CAN-FD HATs (MCP2518FD)
+  receive_own_messages: false     # Do not echo own TX frames
+
+  # Hardware-level frame filters (reduces CPU load by filtering in kernel).
+  # Uncomment and adjust to capture only specific arbitration IDs.
+  # filters:
+  #   - can_id: 0x1A0
+  #     can_mask: 0x7FF
+  #     extended: false
+  #   - can_id: 0x2B0
+  #     can_mask: 0x7F0
+  #     extended: false
+
+# ---- DBC decoding ----------------------------------------------------- #
+dbc:
+  # Path to the DBC file used for --decode-live mode.
+  # Set to null to capture raw CAN frames without any decoding.
+  path: "/home/pi/telemetry-platform/sample-data/dbc/ev_powertrain.dbc"
+  # path: null
+
+# ---- Batching --------------------------------------------------------- #
+batching:
+  interval_seconds: 60            # Batch window (collect frames for this long)
+  max_frames_per_batch: 100000    # Safety upper limit per Parquet file
+  output_dir: "/home/pi/telemetry-platform/data/raw"
+  compression: "zstd"             # Parquet compression codec
+
+# ---- S3 upload -------------------------------------------------------- #
+upload:
+  enabled: true                   # Set false for local-only / offline capture
+  s3_bucket: "your-telemetry-bucket"   # Replace with your actual bucket name
+  s3_prefix: "raw"
+  region: "us-east-1"            # AWS region where the bucket lives
+  max_retries: 5
+  retry_backoff_base: 2.0        # Exponential backoff base (seconds)
+
+  # AWS credentials — NEVER hardcode keys here.
+  # The boto3 credential chain will find credentials automatically via:
+  #   1. Environment variables (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+  #   2. ~/.aws/credentials profile
+  #   3. IAM instance profile (EC2 / IoT Greengrass)
+
+# ---- Offline buffer --------------------------------------------------- #
+offline_buffer:
+  enabled: true
+  pending_dir: "/home/pi/telemetry-platform/data/pending"   # Awaiting upload
+  archive_dir: "/home/pi/telemetry-platform/data/archive"   # Successfully uploaded
+  max_disk_usage_mb: 5000         # Evict oldest files when this limit is reached
+  retry_interval_seconds: 300     # Try to flush pending uploads every 5 min
+
+# ---- Logging ---------------------------------------------------------- #
+logging:
+  level: "INFO"                   # DEBUG for troubleshooting bus issues
+  file: "/home/pi/telemetry-platform/logs/edge-agent.log"
+  max_bytes: 10485760             # 10 MB per log file before rotation
+  backup_count: 5                 # Keep 5 rotated log files
+
+# ---- Health monitoring ----------------------------------------------- #
+monitoring:
+  heartbeat_interval_seconds: 60  # Log health stats every 60 s
+  report_stats: true              # Include frame rate, error count, disk usage
