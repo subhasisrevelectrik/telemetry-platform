@@ -186,7 +186,9 @@ def generate_raw_can_data(
 
     duration_sec = duration_min * 60
     interval_sec = 1.0 / frequency_hz
-    start_time = time.time()
+    # Anchor data so it ends at "now", making it immediately visible
+    # under any preset time range (Last 1 Hour, Last 6 Hours, etc.)
+    start_time = time.time() - duration_sec
 
     raw_frames = []
     decoded_signals = []

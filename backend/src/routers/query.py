@@ -127,7 +127,9 @@ def query_signals_local(vehicle_id: str, request: QueryRequest) -> QueryResponse
         if key not in all_data:
             continue
         points = sorted(all_data[key], key=lambda p: p[0])
-        if len(points) > request.max_points:
+        if request.stride is not None:
+            points = points[::request.stride]
+        elif len(points) > request.max_points:
             points = lttb_downsample(points, request.max_points)
         data_points = [DataPoint(t=int(t), v=v) for t, v in points]
         signal_responses.append(SignalData(
@@ -214,7 +216,9 @@ def query_signals_athena(vehicle_id: str, request: QueryRequest) -> QueryRespons
 
             points = sorted(signal_data[key], key=lambda p: p[0])
 
-            if len(points) > request.max_points:
+            if request.stride is not None:
+                points = points[::request.stride]
+            elif len(points) > request.max_points:
                 points = lttb_downsample(points, request.max_points)
 
             data_points = [DataPoint(t=int(t), v=v) for t, v in points]

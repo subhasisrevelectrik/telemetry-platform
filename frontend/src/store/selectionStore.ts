@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { type TimeRange, getDefaultTimeRange, getPresetRange } from '../utils/timeRanges';
+import { type TimeRange, getDefaultTimeRange } from '../utils/timeRanges';
 
 export interface SelectedSignal {
   message_name: string;
@@ -22,9 +22,13 @@ interface SelectionState {
   clearSignals: () => void;
   toggleSignal: (signal: SelectedSignal) => void;
 
-  // Max points for downsampling
+  // Max points for LTTB downsampling
   maxPoints: number;
   setMaxPoints: (points: number) => void;
+
+  // Stride sampling: take every Nth point (null = use LTTB instead)
+  stride: number | null;
+  setStride: (stride: number | null) => void;
 
   // Sidebar collapsed state
   sidebarCollapsed: boolean;
@@ -70,6 +74,9 @@ export const useSelectionStore = create<SelectionState>((set) => ({
 
   maxPoints: Number(import.meta.env.VITE_DEFAULT_MAX_POINTS) || 500,
   setMaxPoints: (points) => set({ maxPoints: points }),
+
+  stride: null,
+  setStride: (stride) => set({ stride }),
 
   sidebarCollapsed: false,
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),

@@ -1,7 +1,7 @@
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,8 @@ class QueryRequest(BaseModel):
     start_time: datetime
     end_time: datetime
     max_points: int = Field(default=2000, ge=10, le=100000)
+    # When set, take every Nth point instead of LTTB downsampling
+    stride: Optional[int] = Field(default=None, ge=2, le=10000)
 
 
 class DataPoint(BaseModel):
