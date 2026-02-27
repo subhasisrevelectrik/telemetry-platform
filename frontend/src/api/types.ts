@@ -38,8 +38,6 @@ export interface QueryRequest {
   signals: SignalRequest[];
   start_time: string; // ISO datetime
   end_time: string;
-  max_points: number;
-  stride?: number; // When set, take every Nth point instead of LTTB
 }
 
 export interface DataPoint {

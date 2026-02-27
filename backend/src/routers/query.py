@@ -1,7 +1,7 @@
 """Query router for time-series data."""
 
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -16,6 +16,31 @@ from ..downsampler import lttb_downsample
 from ..models import DataPoint, QueryRequest, QueryResponse, QueryStats, SignalData
 
 router = APIRouter()
+
+
+def _partition_date_clause(start_dt: datetime, end_dt: datetime) -> str:
+    """
+    Build a Hive partition pruning WHERE clause for year/month/day columns.
+
+    For ranges up to 62 days we enumerate each date as an IN list so Athena
+    can prune at the partition level before touching any row data.
+    For longer ranges we fall back to a year-only bound.
+    """
+    start_date = start_dt.date()
+    end_date = end_dt.date()
+    days = (end_date - start_date).days + 1
+
+    # Hive partition keys are always VARCHAR in Athena.
+    # S3 paths use zero-padded month/day (month=02, day=06), so we must match exactly.
+    if days <= 62:
+        tuples = []
+        cur = start_date
+        while cur <= end_date:
+            tuples.append(f"('{cur.year}','{cur.month:02d}','{cur.day:02d}')")
+            cur += timedelta(days=1)
+        return f"(year,month,day) IN ({','.join(tuples)})"
+    else:
+        return f"year = '{start_date.year}'"  # year is 4-digit, no padding needed
 
 
 def _extract_partition_date(path: Path) -> Optional[date]:
@@ -168,17 +193,21 @@ def query_signals_athena(vehicle_id: str, request: QueryRequest) -> QueryRespons
     start_ts_ns = int(request.start_time.timestamp() * 1e9)
     end_ts_ns = int(request.end_time.timestamp() * 1e9)
 
-    # Build SQL query with LIMIT to prevent excessive data scanning
-    # Note: We apply downsampling after fetching, so we fetch more than max_points
-    fetch_limit = min(request.max_points * 100, 500000)  # Cap at 500k rows
+    # Partition pruning clause — lets Athena skip entire S3 prefixes
+    partition_clause = _partition_date_clause(request.start_time, request.end_time)
 
+    # Fetch enough rows for LTTB to work well (20× the target output points),
+    # capped at 50k to keep result pagination fast (≪ API Gateway's 29s limit).
+    fetch_limit = min(request.max_points * 20, 50000)
+
+    # No ORDER BY — Python sorts after fetching, which is faster than Athena sort
     sql = f"""
     SELECT timestamp, message_name, signal_name, value, unit
     FROM decoded
     WHERE vehicle_id = '{vehicle_id}'
+      AND {partition_clause}
       AND timestamp BETWEEN {start_ts_ns} AND {end_ts_ns}
       AND ({signal_filter_str})
-    ORDER BY timestamp
     LIMIT {fetch_limit}
     """
 

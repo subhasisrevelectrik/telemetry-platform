@@ -3,6 +3,47 @@ import type { QueryResponse } from '@/api/types';
 import { getSignalColor } from './colors';
 
 /**
+ * Detect significant time gaps between consecutive data points and insert
+ * null y-values at gap midpoints so Plotly draws a visual break in the line.
+ *
+ * A "significant" gap is defined as > thresholdMultiplier × the median
+ * inter-sample interval of the dataset.  This adapts automatically to any
+ * sampling rate without hard-coded time thresholds.
+ */
+function insertGapNulls(
+  tMs: number[],
+  vals: number[],
+  thresholdMultiplier = 5
+): { tMs: number[]; vals: (number | null)[] } {
+  if (tMs.length < 3) {
+    return { tMs, vals };
+  }
+
+  // Compute all consecutive intervals, then find the median
+  const intervals: number[] = [];
+  for (let i = 1; i < tMs.length; i++) {
+    intervals.push(tMs[i] - tMs[i - 1]);
+  }
+  const sorted = [...intervals].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const threshold = median * thresholdMultiplier;
+
+  // Build output arrays, inserting a null at the midpoint of each large gap
+  const outT: number[] = [tMs[0]];
+  const outV: (number | null)[] = [vals[0]];
+  for (let i = 1; i < tMs.length; i++) {
+    if (tMs[i] - tMs[i - 1] > threshold) {
+      outT.push((tMs[i - 1] + tMs[i]) / 2);
+      outV.push(null);
+    }
+    outT.push(tMs[i]);
+    outV.push(vals[i]);
+  }
+
+  return { tMs: outT, vals: outV };
+}
+
+/**
  * Transform QueryResponse data into Plotly format
  * Plotly expects array of traces: [{x: [], y: [], type: 'scatter', ...}]
  */
@@ -37,13 +78,28 @@ export function transformQueryDataToPlotly(
       return;
     }
 
-    // Convert timestamps to Date objects for better Plotly formatting
-    const timestamps = validData.map((point) => new Date(point.t));
-    const values = validData.map((point) => point.v);
+    // Sort by timestamp before gap detection
+    const sortedData = [...validData].sort((a, b) => a.t - b.t);
+
+    // Detect significant time gaps and insert nulls so Plotly draws breaks
+    const { tMs: gappedTMs, vals: gappedVals } = insertGapNulls(
+      sortedData.map((p) => p.t),
+      sortedData.map((p) => p.v)
+    );
+
+    // Convert timestamps to local-time strings.
+    // Plotly's type:'date' axis renders strings as-is (no tz conversion),
+    // so we shift each UTC ms value by the browser's UTC offset to get
+    // the correct local clock time on the axis.
+    const tzOffsetMs = new Date().getTimezoneOffset() * 60 * 1000;
+    const timestamps = gappedTMs.map((t) =>
+      new Date(t - tzOffsetMs).toISOString().slice(0, 23)
+    );
 
     const trace: Data = {
       x: timestamps,
-      y: values,
+      y: gappedVals,
+      connectgaps: false,
       type: 'scatter',
       mode: 'lines',
       name: `${signal.name} (${signal.unit || ''})`,
@@ -55,7 +111,7 @@ export function transformQueryDataToPlotly(
       yaxis: yaxisAssignments[index],
       hovertemplate:
         '<b>%{fullData.name}</b><br>' +
-        'Time: %{x|%Y-%m-%d %H:%M:%S.%L}<br>' +
+        'Time: %{x}<br>' +
         'Value: %{y:.3f}<br>' +
         '<extra></extra>',
     };
