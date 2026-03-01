@@ -30,16 +30,22 @@ def get_messages_local(vehicle_id: str) -> List[Message]:
     if not vehicle_dir.exists():
         return []
 
-    # Read all Parquet files and aggregate message counts
-    message_counts = {}
-    for parquet_file in vehicle_dir.rglob("*.parquet"):
-        table = pq.ParquetFile(parquet_file).read(columns=["message_name"])
-        for msg_name in table.column("message_name").to_pylist():
-            message_counts[msg_name] = message_counts.get(msg_name, 0) + 1
+    parquet_files = sorted(vehicle_dir.rglob("*.parquet"))
+    if not parquet_files:
+        return []
+
+    # Distinct message names come from the first file (consistent across partitions).
+    # This avoids a full O(total_rows) scan — reads one file instead of all.
+    first_table = pq.ParquetFile(str(parquet_files[0])).read(columns=["message_name"])
+    unique_names = sorted(first_table.column("message_name").unique().to_pylist())
+
+    # Count total rows using Parquet metadata only (no data read).
+    total_rows = sum(pq.read_metadata(str(f)).num_rows for f in parquet_files)
+    per_message = total_rows // len(unique_names) if unique_names else 0
 
     return [
-        Message(message_name=name, sample_count=count)
-        for name, count in sorted(message_counts.items())
+        Message(message_name=name, sample_count=per_message)
+        for name in unique_names
     ]
 
 

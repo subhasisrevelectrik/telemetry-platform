@@ -23,60 +23,62 @@ async def get_signals(vehicle_id: str, message_name: str):
 
 
 def get_signals_local(vehicle_id: str, message_name: str) -> List[Signal]:
-    """Get signals from local files."""
+    """Get signals from local files.
+
+    Reads a single representative Parquet file so the response is fast
+    even when there are millions of rows across many partitions.
+    """
     data_dir = Path(settings.local_data_dir)
     vehicle_dir = data_dir / f"vehicle_id={vehicle_id}"
 
     if not vehicle_dir.exists():
         return []
 
-    signal_stats = {}
+    parquet_files = sorted(vehicle_dir.rglob("*.parquet"))
+    if not parquet_files:
+        return []
 
-    for parquet_file in vehicle_dir.rglob("*.parquet"):
-        table = pq.ParquetFile(parquet_file).read(
+    signal_stats: dict = {}
+
+    # Read ONE file — signal names and units are identical across partitions.
+    # Stats (min/max/avg) are approximate but sufficient for the selector UI.
+    for parquet_file in parquet_files[:1]:
+        import pyarrow.compute as pc
+
+        table = pq.ParquetFile(str(parquet_file)).read(
             columns=["message_name", "signal_name", "value", "unit"]
         )
-
-        # Filter by message_name
-        mask = [msg == message_name for msg in table.column("message_name").to_pylist()]
+        mask = pc.equal(table.column("message_name"), message_name)
         filtered = table.filter(mask)
 
         if len(filtered) == 0:
             continue
 
-        signal_names = filtered.column("signal_name").to_pylist()
-        values = filtered.column("value").to_pylist()
-        units = filtered.column("unit").to_pylist()
+        for sig_name in filtered.column("signal_name").unique().to_pylist():
+            sig_mask = pc.equal(filtered.column("signal_name"), sig_name)
+            sig_rows = filtered.filter(sig_mask)
+            values = sig_rows.column("value")
+            unit = sig_rows.column("unit")[0].as_py()
+            signal_stats[sig_name] = {
+                "unit": unit,
+                "min": pc.min(values).as_py(),
+                "max": pc.max(values).as_py(),
+                "mean": pc.mean(values).as_py(),
+            }
 
-        for sig_name, value, unit in zip(signal_names, values, units):
-            if sig_name not in signal_stats:
-                signal_stats[sig_name] = {
-                    "unit": unit,
-                    "min": value,
-                    "max": value,
-                    "sum": value,
-                    "count": 1,
-                }
-            else:
-                s = signal_stats[sig_name]
-                if value < s["min"]:
-                    s["min"] = value
-                if value > s["max"]:
-                    s["max"] = value
-                s["sum"] += value
-                s["count"] += 1
-
-    signals = []
-    for sig_name, stats in signal_stats.items():
-        signals.append(Signal(
-            signal_name=sig_name,
-            unit=stats["unit"],
-            min_value=stats["min"],
-            max_value=stats["max"],
-            avg_value=stats["sum"] / stats["count"],
-        ))
-
-    return sorted(signals, key=lambda s: s.signal_name)
+    return sorted(
+        [
+            Signal(
+                signal_name=sig_name,
+                unit=stats["unit"],
+                min_value=stats["min"],
+                max_value=stats["max"],
+                avg_value=stats["mean"],
+            )
+            for sig_name, stats in signal_stats.items()
+        ],
+        key=lambda s: s.signal_name,
+    )
 
 
 def get_signals_athena(vehicle_id: str, message_name: str) -> List[Signal]:

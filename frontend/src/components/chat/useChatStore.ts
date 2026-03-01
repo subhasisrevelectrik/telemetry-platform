@@ -2,11 +2,15 @@
  * Zustand store for the AI chat panel state.
  */
 import { create } from 'zustand';
-import { sendChatMessage } from './chatApi';
+import { startChat, pollChatStatus } from './chatApi';
 import type { ChatChart, ChatMessage } from './chatTypes';
 import { useSelectionStore } from '@/store/selectionStore';
 import { useChartStore } from '@/store/chartStore';
 import type { QueryResponse, SignalData, DataPoint } from '@/api/types';
+
+const POLL_INITIAL_DELAY_MS = 1000; // first poll after 1 s
+const POLL_INTERVAL_MS = 2000;      // subsequent polls every 2 s
+const POLL_MAX_ATTEMPTS = 90;       // give up after 3 minutes
 
 interface ChatState {
   /** Whether the chat panel is visible */
@@ -60,27 +64,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     try {
-      const result = await sendChatMessage({
+      // --- 1. Start the async job (returns immediately) ---
+      const { job_id, conversation_id } = await startChat({
         message: text,
         conversation_id: get().conversationId ?? undefined,
         vehicle_context: vehicleId ?? undefined,
       });
 
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: result.response.text,
-        charts: result.response.charts,
-        anomalies: result.response.anomalies,
-        suggestions: result.response.suggestions,
-        timestamp: new Date(),
-      };
+      set({ conversationId: conversation_id });
 
-      set({
-        messages: [...get().messages, assistantMsg],
-        conversationId: result.conversation_id,
-        isLoading: false,
-      });
+      // --- 2. Poll until complete ---
+      await new Promise((resolve) => setTimeout(resolve, POLL_INITIAL_DELAY_MS));
+
+      for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+        const status = await pollChatStatus(job_id);
+
+        if (status.status === 'complete' && status.response) {
+          const assistantMsg: ChatMessage = {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: status.response.text,
+            charts: status.response.charts,
+            anomalies: status.response.anomalies,
+            suggestions: status.response.suggestions,
+            timestamp: new Date(),
+          };
+
+          set({
+            messages: [...get().messages, assistantMsg],
+            conversationId: status.conversation_id ?? get().conversationId,
+            isLoading: false,
+          });
+          return;
+        }
+
+        if (status.status === 'error') {
+          throw new Error(status.error ?? 'Chat processing failed');
+        }
+
+        // Still pending — wait before next poll
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+
+      throw new Error('Chat timed out after 3 minutes');
     } catch (err: unknown) {
       const message =
         err instanceof Error

@@ -110,6 +110,20 @@ export interface ChatApiResponse {
   response: ChatResponseBody;
 }
 
+/** Returned immediately from POST /chat — use job_id to poll for result. */
+export interface ChatStartResponse {
+  job_id: string;
+  conversation_id: string;
+}
+
+/** Returned by GET /chat/status/{job_id}. */
+export interface JobStatusResponse {
+  status: 'pending' | 'complete' | 'error';
+  response?: ChatResponseBody;
+  conversation_id?: string;
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Usage stats
 // ---------------------------------------------------------------------------
