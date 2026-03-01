@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models import HealthResponse
 from .routers import messages, query, sessions, signals, vehicles
+from .routers import chat as chat_router_module
 
 # Create FastAPI app
 app = FastAPI(
@@ -29,6 +30,7 @@ app.include_router(sessions.router, prefix="/vehicles", tags=["sessions"])
 app.include_router(messages.router, prefix="/vehicles", tags=["messages"])
 app.include_router(signals.router, prefix="/vehicles", tags=["signals"])
 app.include_router(query.router, prefix="/vehicles", tags=["query"])
+app.include_router(chat_router_module.router, tags=["chat"])
 
 
 @app.get("/", include_in_schema=False)

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Local mode configuration
     local_data_dir: str = "../data/decoded"
 
+    # Anthropic API (chat feature)
+    anthropic_api_key: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { TopBar } from '@/components/layout/TopBar';
+import { ChatPanel } from '@/components/chat/ChatPanel';
+import { ChatToggle } from '@/components/chat/ChatToggle';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { MainContent } from '@/components/layout/MainContent';
 import { VehicleSelector } from '@/components/selectors/VehicleSelector';
@@ -76,7 +78,14 @@ function App() {
 
   return (
     <AppLayout
-      topBar={<TopBar />}
+      topBar={
+        <div className="flex items-center pr-3">
+          <div className="flex-1">
+            <TopBar />
+          </div>
+          <ChatToggle />
+        </div>
+      }
       sidebar={
         <Sidebar>
           <VehicleSelector />
@@ -90,6 +99,8 @@ function App() {
         </Sidebar>
       }
       mainContent={
+        <div className="flex h-full overflow-hidden">
+          <div className="flex-1 overflow-hidden">
         <MainContent
           toolbar={
             <ChartToolbar
@@ -126,6 +137,9 @@ function App() {
             ) : undefined
           }
         />
+          </div>
+          <ChatPanel />
+        </div>
       }
     />
   );
